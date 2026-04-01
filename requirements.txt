@@ -1,0 +1,23 @@
+# AI Filter Platform – Python dependencies
+
+# Core
+opencv-python>=4.9.0
+numpy>=1.26.0
+pymongo>=4.8.0
+dnspython>=2.6.1
+python-dotenv>=1.0.1
+
+# UI
+gradio>=4.31.0
+
+# AI provider SDKs (bypass Cloudflare – use instead of raw urllib)
+groq>=0.9.0
+openai>=1.30.0
+
+# API server (optional FastAPI backend)
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9     # for file uploads in FastAPI
+
+# Pydantic (pulled by FastAPI, pinned here for clarity)
+pydantic>=2.7.0
