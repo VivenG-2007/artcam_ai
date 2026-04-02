@@ -27,6 +27,10 @@ from database import FilterDatabase
 from share_service import ShareService
 from validator import FilterValidator
 
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
+
 # ── Singletons ────────────────────────────────────────────────────────────────
 validator = FilterValidator()
 compiler  = FilterCompiler()
@@ -34,63 +38,59 @@ generator = AIFilterGenerator(validator=validator, compiler=compiler)
 db        = FilterDatabase()
 share_svc = ShareService()
 
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-
+# MediaPipe Tasks API Face Landmarker
+import os
+MODEL_PATH = "face_landmarker.task"
+_base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
+_options = vision.FaceLandmarkerOptions(
+    base_options=_base_options,
+    output_face_blendshapes=False,
+    output_facial_transformation_matrixes=False,
+    num_faces=1
+)
+try:
+    detector = vision.FaceLandmarker.create_from_options(_options)
+except Exception as e:
+    print("Warning: Could not load FaceLandmarker. Model might be missing.", e)
+    detector = None
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
-# State for smoothing the bounding box tracker
-_tracker_state = {
-    "bounds": None,
-    "frame_count": 0,
-}
-
-def get_face_bounds(frame_bgr: np.ndarray) -> tuple | None:
-    """Fast, smoothed body tracking using face detection."""
-    global _tracker_state
+def get_landmarks(frame_bgr: np.ndarray) -> dict | None:
+    """Returns a dict of 468 absolute pixel 2D keypoints (x, y) from MediaPipe."""
+    if detector is None:
+        return None
+        
+    rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    results = detector.detect(mp_image)
     
-    _tracker_state["frame_count"] += 1
-    
-    # To reduce lag, only run heavy Haar detection every 3rd frame
-    # and run it on a tiny downscaled frame (e.g., width 320)
+    if not results.face_landmarks:
+        return None
+        
+    landmarks = results.face_landmarks[0]
     h, w = frame_bgr.shape[:2]
-    run_detection = (_tracker_state["frame_count"] % 3 == 1) or (_tracker_state["bounds"] is None)
     
-    if run_detection:
-        scale = 320.0 / w
-        small = cv2.resize(frame_bgr, (0, 0), fx=scale, fy=scale)
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=4)
-        
-        if len(faces) > 0:
-            # Scale coords back up to original frame size
-            fx, fy, fw, fh = [int(v / scale) for v in faces[0]]
-            
-            # Expand to full body
-            body_w = int(fw * 2.8)
-            body_h = int(fh * 3.5)
-            body_x = int(fx - (body_w - fw) / 2)
-            body_y = int(fy - fh * 0.2)
-            
-            # Clamp to frame
-            body_x = max(0, min(w - 10, body_x))
-            body_y = max(0, min(h - 10, body_y))
-            body_w = min(w - body_x, body_w)
-            body_h = min(h - body_y, body_h)
-            
-            target_bounds = (body_x, body_y, body_w, body_h)
-            
-            # EMA Smoothing (Alpha = 0.4 for smooth, snappy tracking)
-            if _tracker_state["bounds"] is None:
-                _tracker_state["bounds"] = target_bounds
-            else:
-                curr = _tracker_state["bounds"]
-                _tracker_state["bounds"] = tuple(
-                    int(curr[i] * 0.6 + target_bounds[i] * 0.4) for i in range(4)
-                )
-    
-    return _tracker_state["bounds"]
+    return {
+        "nose_tip": (int(landmarks[1].x * w), int(landmarks[1].y * h)),
+        "left_eye": (int(landmarks[159].x * w), int(landmarks[159].y * h)),
+        "right_eye": (int(landmarks[386].x * w), int(landmarks[386].y * h)),
+        "mouth_center": (
+            int((landmarks[13].x + landmarks[14].x) / 2 * w),
+            int((landmarks[13].y + landmarks[14].y) / 2 * h)
+        ),
+        "chin": (int(landmarks[152].x * w), int(landmarks[152].y * h)),
+        "left_cheek": (int(landmarks[234].x * w), int(landmarks[234].y * h)),
+        "right_cheek": (int(landmarks[454].x * w), int(landmarks[454].y * h)),
+        "forehead": (int(landmarks[10].x * w), int(landmarks[10].y * h)),
+        "face_bounding_box": (
+            min([int(lm.x * w) for lm in landmarks]),
+            min([int(lm.y * h) for lm in landmarks]),
+            max([int(lm.x * w) for lm in landmarks]) - min([int(lm.x * w) for lm in landmarks]),
+            max([int(lm.y * h) for lm in landmarks]) - min([int(lm.y * h) for lm in landmarks])
+        ),
+        "mesh": [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
+    }
 
 def validate_and_compile(code: str):
     """Validate → compile → smoke test. Returns (fn, message)."""
@@ -120,11 +120,13 @@ def generate_filter(prompt: str):
     """Run the full AI pipeline. Keys loaded from env."""
     groq_key       = os.environ.get("GROQ_API_KEY", "")
     openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+    gemini_key     = os.environ.get("GEMINI_API_KEY", "")
 
     result = generator.generate(
         prompt=prompt,
         groq_api_key=groq_key,
         openrouter_api_key=openrouter_key,
+        gemini_api_key=gemini_key,
     )
     try:
         db.save_generation_session(result.to_dict())
@@ -149,9 +151,9 @@ def apply_to_image(code: str, image: np.ndarray):
 
     try:
         frame_bgr = rgb_to_bgr(image)
-        bounds = get_face_bounds(frame_bgr)
+        lmks = get_landmarks(frame_bgr)
         try:
-            result_bgr = fn(frame_bgr, landmarks=bounds)
+            result_bgr = fn(frame_bgr, landmarks=lmks)
         except TypeError:
             result_bgr = fn(frame_bgr)  # Fallback if AI forgot to add landmarks argument
             
@@ -176,9 +178,9 @@ def process_webcam_frame(frame: np.ndarray, code: str):
         return out, f"⚠️ {msg}"
     try:
         frame_bgr = rgb_to_bgr(frame)
-        bounds = get_face_bounds(frame_bgr)
+        lmks = get_landmarks(frame_bgr)
         try:
-            result_bgr = fn(frame_bgr, landmarks=bounds)
+            result_bgr = fn(frame_bgr, landmarks=lmks)
         except TypeError:
             result_bgr = fn(frame_bgr)
             
@@ -220,9 +222,9 @@ def process_video(code: str, video_path: str):
             if not ret:
                 break
             try:
-                bounds = get_face_bounds(frame)
+                lmks = get_landmarks(frame)
                 try:
-                    out_frame = fn(frame, landmarks=bounds)
+                    out_frame = fn(frame, landmarks=lmks)
                 except TypeError:
                     out_frame = fn(frame)
                 writer.write(out_frame.astype(np.uint8))

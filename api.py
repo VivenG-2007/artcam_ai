@@ -57,6 +57,7 @@ class GenerateRequest(BaseModel):
     prompt: str
     groq_api_key: Optional[str] = ""
     openrouter_api_key: Optional[str] = ""
+    gemini_api_key: Optional[str] = ""
 
 
 class GenerationAttemptRecord(BaseModel):
@@ -111,6 +112,7 @@ def generate(req: GenerateRequest):
             prompt=req.prompt,
             groq_api_key=req.groq_api_key,
             openrouter_api_key=req.openrouter_api_key,
+            gemini_api_key=req.gemini_api_key,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

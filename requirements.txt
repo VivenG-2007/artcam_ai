@@ -3,6 +3,7 @@
 # Core
 opencv-python>=4.9.0
 numpy>=1.26.0
+mediapipe>=0.10.0
 pymongo>=4.8.0
 dnspython>=2.6.1
 python-dotenv>=1.0.1
