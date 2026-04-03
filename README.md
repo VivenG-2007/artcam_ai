@@ -32,20 +32,6 @@ MongoDB stores:
 - `generation_sessions`: full generation runs with provider/model attempts,
   latency, validation failures, and final outcome
 
-## Environment Variables
-
-```bash
-GROQ_API_KEY=...
-OPENROUTER_API_KEY=...
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DATABASE=artcam
-SHARE_WEBHOOK_URL=http://localhost:5678/webhook/share-filter
-GROQ_MODEL=llama3-70b-8192
-GROQ_STRICT_MODEL=llama3-70b-8192
-OPENROUTER_DEEPSEEK_MODEL=deepseek/deepseek-coder
-AI_PROVIDER_TIMEOUT_SEC=30
-```
-
 The UI and API also accept Groq and OpenRouter keys per request. If request
 keys are omitted, environment variables are used.
 
